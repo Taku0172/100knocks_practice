@@ -1,0 +1,51 @@
+name: dockle
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions: {}
+
+jobs:
+  dockle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run docker containers
+        run: docker compose up -d
+      - name: Get latest dockle version
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        id: get_latest_dockle_version
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          result-encoding: string
+          script: |
+            const release = await github.rest.repos.getLatestRelease({
+              owner: 'goodwithtech',
+              repo: 'dockle'
+            });
+            return release.data.tag_name;
+      - name: Run Dockle
+        run: |
+          for image_name in $(docker compose images | awk 'OFS=":" {print $2,$3}' | tail -n +2); do
+            docker save "${image_name}" | gzip > image.tar.gz
+            cmd="docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $(pwd)/.dockleignore:/.dockleignore -v $(pwd)/image.tar.gz:/image.tar.gz "
+            cmd+="goodwithtech/dockle:${DOCKLE_VERSION} --exit-code 1 --exit-level info --input /image.tar.gz "
+
+            if [[ "${image_name}" =~ "dss-notebook" ]]; then
+              cmd+="--timeout 600s -ae mdf -af settings.py -af credentials -i DKL-DI-0001 "
+            elif [[ "${image_name}" =~ "dss-postgres" ]]; then
+              cmd+="-ak key "
+            fi
+
+            cmd+="${image_name}"
+            echo "> ${cmd}"
+            eval "${cmd}"
+          done
+        env:
+          DOCKLE_VERSION: ${{ steps.get_latest_dockle_version.outputs.result }}
